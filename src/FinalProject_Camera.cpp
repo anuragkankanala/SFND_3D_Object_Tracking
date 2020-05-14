@@ -179,8 +179,8 @@ int main(int argc, const char *argv[])
         cv::cvtColor((dataBuffer.end() - 1)->cameraImg, imgGray, cv::COLOR_BGR2GRAY);
 
         // extract 2D keypoints from current image
-        vector<cv::KeyPoint> keypoints; // create empty feature list for current image
-        string detectorType = "BRISK";  //SHITOMASI, HARRIS, FAST, BRISK, ORB, AKAZE, SIFT
+        vector<cv::KeyPoint> keypoints;    // create empty feature list for current image
+        string detectorType = "SHITOMASI"; //SHITOMASI, HARRIS, FAST, BRISK, ORB, AKAZE, SIFT
 
         if (detectorType.compare("SHITOMASI") == 0)
         {

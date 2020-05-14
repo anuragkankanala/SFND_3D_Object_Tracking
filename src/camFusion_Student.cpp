@@ -248,13 +248,14 @@ void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
     float IQR = Q3 - Q1;
     for (float xprev : distributionXMinPrev)
     {
-        if (xprev > (Q1 - 3 * IQR))
+        if (xprev > (Q1 - 1.5 * IQR))
         {
             xMinPrev = xprev;
             break;
         }
     }
 
+    xMinPrev = (Q3 + Q1) / 2.0;
     for (const auto &lidarPoint : lidarPointsCurr)
     {
         float y = lidarPoint.y;
@@ -272,13 +273,13 @@ void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
     IQR = Q3 - Q1;
     for (float xcurr : distributionXMinCurr)
     {
-        if (xcurr > (Q1 - 3 * IQR))
+        if (xcurr > (Q1 - 1.5 * IQR))
         {
             xMinCurr = xcurr;
             break;
         }
     }
-
+    xMinCurr = (Q3 + Q1) / 2.0;
     cout << "XminPRev : " << xMinPrev << " | XminCurr : " << xMinCurr << "\n";
     TTC = (xMinCurr * dT) / (xMinPrev - xMinCurr);
 }
