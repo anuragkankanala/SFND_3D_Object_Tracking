@@ -130,14 +130,91 @@ void show3DObjects(std::vector<BoundingBox> &boundingBoxes, cv::Size worldSize, 
 // associate a given bounding box with the keypoints it contains
 void clusterKptMatchesWithROI(BoundingBox &boundingBox, std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPoint> &kptsCurr, std::vector<cv::DMatch> &kptMatches)
 {
-    // ...
+    std::vector<float> euclideanDistances;
+    std::vector<cv::DMatch> roiMatches;
+
+    for (const auto match : kptMatches)
+    {
+        cv::KeyPoint keyPointPrev = kptsPrev.at(match.queryIdx);
+        cv::KeyPoint keyPointCurr = kptsCurr.at(match.trainIdx);
+
+        //check if keypoints are inside the roi, calculate eucliden distance and store probable matches
+        if (boundingBox.roi.contains(keyPointCurr.pt) && boundingBox.roi.contains(keyPointPrev.pt))
+        {
+            roiMatches.push_back(match);
+            cv::Point2f diff = keyPointCurr.pt - keyPointPrev.pt;
+            float euclideanDistance = cv::norm(diff);
+            euclideanDistances.push_back(euclideanDistance);
+        }
+    }
+
+    //std::cout << "ROI Matching bounding boxes = " << roiMatches.size() << "\n";
+    std::sort(euclideanDistances.begin(), euclideanDistances.end());
+
+    //Using IQR to remove outliers.
+    int indexQ1 = floor(euclideanDistances.size() / 4);
+    int indexQ3 = floor((euclideanDistances.size() * 3) / 4);
+
+    float Q1 = euclideanDistances.at(indexQ1);
+    float Q3 = euclideanDistances.at(indexQ3);
+    float IQR = Q3 - Q1;
+
+    for (auto match : roiMatches)
+    {
+        cv::KeyPoint keyPointPrev = kptsPrev.at(match.queryIdx);
+        cv::KeyPoint keyPointCurr = kptsCurr.at(match.trainIdx);
+        cv::Point2f diff = keyPointCurr.pt - keyPointPrev.pt;
+        float euclideanDistance = cv::norm(diff);
+
+        if ((Q1 - 1.5 * IQR) <= euclideanDistance && euclideanDistance <= (Q3 + 1.5 * IQR))
+        {
+            boundingBox.kptMatches.push_back(match);
+        }
+    }
+
+    //std::cout << "Final Matching boxes roi = " << boundingBox.kptMatches.size() << "\n";
 }
 
 // Compute time-to-collision (TTC) based on keypoint correspondences in successive images
 void computeTTCCamera(std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPoint> &kptsCurr,
                       std::vector<cv::DMatch> kptMatches, double frameRate, double &TTC, cv::Mat *visImg)
 {
-    // ...
+    std::vector<double> distanceRatios;
+    for (int i = 0; i < kptMatches.size() - 1; i++) //outer loop
+    {
+        cv::KeyPoint keypointOuterCurr = kptsCurr.at(kptMatches.at(i).trainIdx);
+        cv::KeyPoint keypointOuterPrev = kptsPrev.at(kptMatches.at(i).queryIdx);
+
+        for (int j = 1; j < kptMatches.size(); j++) //inner loop
+        {
+            double minDist = 100.0;
+
+            cv::KeyPoint keypointInnerCurr = kptsCurr.at(kptMatches.at(j).trainIdx);
+            cv::KeyPoint keypointInnerPrev = kptsPrev.at(kptMatches.at(j).queryIdx);
+
+            double distanceCurr = cv::norm(keypointInnerCurr.pt - keypointOuterCurr.pt);
+            double distancePrev = cv::norm(keypointInnerPrev.pt - keypointOuterPrev.pt);
+
+            if (distancePrev > std::numeric_limits<double>::epsilon() && distanceCurr >= minDist)
+            {
+                double distanceRatio = distanceCurr / distancePrev;
+                distanceRatios.push_back(distanceRatio);
+            }
+        }
+    }
+    if (distanceRatios.size() == 0)
+    {
+        TTC = NAN;
+        return;
+    }
+
+    //sort distance Ratios to find median distRatio
+    std::sort(distanceRatios.begin(), distanceRatios.end());
+    long medianRatioIndex = floor(distanceRatios.size() / 2.0);
+    double medianDistanceRatio = distanceRatios.size() % 2 == 0 ? (distanceRatios.at(medianRatioIndex - 1) + distanceRatios.at(medianRatioIndex)) / 2.0 : distanceRatios.at(medianRatioIndex);
+
+    double dT = 1 / frameRate; //time between consecutive frames
+    TTC = -dT / (1 - medianDistanceRatio);
 }
 
 void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
@@ -147,14 +224,12 @@ void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
 
     double egoLaneWidth{5.0}; //consider lidar points only in the ego lane to avoid outliers
 
-    //To avoid outliers , median of min x values can be taken
-    int numSamplesForMedian = 5;
+    //Use IQR to remove any possible outlier
+    std::vector<float> distributionXMinPrev;
+    std::vector<float> distributionXMinCurr;
 
-    std::deque<float> distributionXMinPrev;
-    std::deque<float> distributionXMinCurr;
-
-    float xMinPrev{1e9};
-    float xMinCurr{1e9};
+    float xMinPrev{1e8};
+    float xMinCurr{1e8};
 
     for (const auto &lidarPoint : lidarPointsPrev)
     {
@@ -163,12 +238,20 @@ void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
 
         if (std::abs(y) <= egoLaneWidth / 2.0)
         {
-            xMinPrev = x < xMinPrev ? x : xMinPrev;
-            if (distributionXMinPrev.size() == numSamplesForMedian)
-            {
-                distributionXMinPrev.pop_front();
-            }
-            distributionXMinPrev.push_back(xMinPrev);
+            distributionXMinPrev.push_back(x);
+        }
+    }
+
+    std::sort(distributionXMinPrev.begin(), distributionXMinPrev.end());
+    float Q1 = distributionXMinPrev.at(distributionXMinPrev.size() / 4);
+    float Q3 = distributionXMinPrev.at((3 * distributionXMinPrev.size()) / 4);
+    float IQR = Q3 - Q1;
+    for (float xprev : distributionXMinPrev)
+    {
+        if (xprev > (Q1 - 3 * IQR))
+        {
+            xMinPrev = xprev;
+            break;
         }
     }
 
@@ -179,66 +262,79 @@ void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
 
         if (std::abs(y) <= egoLaneWidth / 2.0)
         {
-            xMinCurr = x < xMinCurr ? x : xMinCurr;
-            if (distributionXMinCurr.size() == numSamplesForMedian)
-            {
-                distributionXMinCurr.pop_front();
-            }
-            distributionXMinCurr.push_back(xMinCurr);
+            distributionXMinCurr.push_back(x);
         }
     }
 
-    std::sort(distributionXMinPrev.begin(), distributionXMinPrev.end());
     std::sort(distributionXMinCurr.begin(), distributionXMinCurr.end());
+    Q1 = distributionXMinCurr.at(distributionXMinCurr.size() / 4);
+    Q3 = distributionXMinCurr.at((3 * distributionXMinCurr.size()) / 4);
+    IQR = Q3 - Q1;
+    for (float xcurr : distributionXMinCurr)
+    {
+        if (xcurr > (Q1 - 3 * IQR))
+        {
+            xMinCurr = xcurr;
+            break;
+        }
+    }
 
-    float medianXMinPrev = distributionXMinPrev.at(numSamplesForMedian / 2);
-    float medianXMinCurr = distributionXMinCurr.at(numSamplesForMedian / 2);
-
-    TTC = (medianXMinCurr * dT) / (medianXMinPrev - medianXMinCurr);
+    cout << "XminPRev : " << xMinPrev << " | XminCurr : " << xMinCurr << "\n";
+    TTC = (xMinCurr * dT) / (xMinPrev - xMinCurr);
 }
 
 void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bbBestMatches, DataFrame &prevFrame, DataFrame &currFrame)
 {
-    //Find all possible pairs of <prev_frame_id, curr_frame_id> and store the count in a array arr[prev_id][curr_id] = count
+    /*
+        Check if the match is present in the roi of both currFrame and prevFrame. For such matches, populate a map
+        that has the id of prevBoundingBox as key. Value is a vector of counts, indexed by id of currBoundingBox.
+        Then iterate over the vectors for every prevId and find the best currId.
+    */
+    //Find all possible pairs of <prev_frame_id, curr_frame_id>, store the count in a map. prev_frame_id -> {curr_frame_id, count}
     int prevBoundingBoxesSize = prevFrame.boundingBoxes.size();
     int currBoundingBoxesSize = currFrame.boundingBoxes.size();
 
-    int matchedBoxes[prevBoundingBoxesSize][currBoundingBoxesSize];
-    for (const auto &match : matches)
+    std::map<int, std::vector<int>> prevIdCurrIdCountMap;
+    for (auto match_ptr = matches.begin(); match_ptr != matches.end(); match_ptr++)
     {
-        const cv::KeyPoint &prevKeyPoint = prevFrame.keypoints.at(match.queryIdx);
-        const cv::KeyPoint &currKeyPoint = currFrame.keypoints.at(match.trainIdx);
+        const cv::KeyPoint prevKeyPoint = prevFrame.keypoints.at(match_ptr->queryIdx);
+        const cv::KeyPoint currKeyPoint = currFrame.keypoints.at(match_ptr->trainIdx);
 
         for (const auto &prevBoundingBox : prevFrame.boundingBoxes)
         {
-            //If prevKeypoint is found in roi of the prevBoundingBox, search for a corresponding bounding box match in current frame of the currKeyPoint
-            if (prevBoundingBox.roi.contains(prevKeyPoint.pt))
+            for (const auto &currBoundingBox : currFrame.boundingBoxes)
             {
-                for (const auto &currBoundingBox : currFrame.boundingBoxes)
+                if (prevBoundingBox.roi.contains(prevKeyPoint.pt) && currBoundingBox.roi.contains(currKeyPoint.pt))
                 {
-                    if (currBoundingBox.roi.contains(currKeyPoint.pt))
+                    //prev_id doesn't exist in the map
+                    if (prevIdCurrIdCountMap.find(prevBoundingBox.boxID) == prevIdCurrIdCountMap.end())
                     {
-                        matchedBoxes[prevBoundingBox.boxID][currBoundingBox.boxID]++;
+                        std::vector<int> value(currBoundingBoxesSize, 0);
+                        prevIdCurrIdCountMap.insert(std::make_pair(prevBoundingBox.boxID, value));
                     }
+                    prevIdCurrIdCountMap[prevBoundingBox.boxID].at(currBoundingBox.boxID)++;
                 }
             }
         }
     }
 
-    //for every prev_id find a current_id with max count, discard rest pairs
-    for (int i = 0; i < prevBoundingBoxesSize; i++)
+    //for every prev_id find the most occuring curr_id based on the index
+    for (auto &idVectorPair : prevIdCurrIdCountMap)
     {
-        int max_count{0};
-        int box_id_max_count{0};
-
-        for (int j = 0; j < currBoundingBoxesSize; j++)
+        int maxValue = 0;
+        int bestCurrId = -1;
+        int prevId = idVectorPair.first;
+        for (int currId = 0; currId < idVectorPair.second.size(); currId++)
         {
-            if (matchedBoxes[i][j] > max_count)
+            if (idVectorPair.second.at(currId) > maxValue)
             {
-                max_count = matchedBoxes[i][j];
-                box_id_max_count = j;
+                maxValue = idVectorPair.second.at(currId);
+                bestCurrId = currId;
             }
         }
-        bbBestMatches[i] = box_id_max_count;
+        if (bestCurrId > -1)
+        {
+            bbBestMatches.insert(std::make_pair(prevId, bestCurrId));
+        }
     }
 }
