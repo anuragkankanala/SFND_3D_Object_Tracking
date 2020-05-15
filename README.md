@@ -13,10 +13,10 @@ The goal of the project is to use LIDAR and Camera data to estimate the Time to 
 ## Performace Results
 
 The image below shows the Camera TTC estimations for various Detector-Descriptor Combinations:
-<img src="images/CameraTTC.png" width="779" height="414" />
+<img src="images/CameraTTC.png" />
 
 The image below shows the LIDAR TTC estimation :
-<img src="images/lidarTTC.png" width="779" height="414" />
+<img src="images/lidarTTC.png" />
 
 ## Dependencies for Running Locally
 * cmake >= 2.8
